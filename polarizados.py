@@ -3,12 +3,10 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
-import os
 
-# Importaciones para PDF
+# Importaciones para generación de PDF de Garantía
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-from pypdf import PdfReader, PdfWriter
 
 # Configuración de la página
 st.set_page_config(page_title="Control de Polarizados", page_icon="🚗", layout="wide")
@@ -51,45 +49,75 @@ def conectar_db():
 
 conectar_db()
 
-# --- FUNCIÓN PARA GENERAR EL PDF DE GARANTÍA ---
-def generar_garantia_pdf(cliente_vehiculo, paquete_desc, material_desc, fecha, total_cobrado):
-    """
-    Superpone la información de la venta sobre la plantilla PDF o genera una elegante si no existe.
-    """
-    buffer_overlay = BytesIO()
-    c = canvas.Canvas(buffer_overlay, pagesize=letter)
+# --- FUNCIÓN GENERADORA DE CARTA DE GARANTÍA (IDÉNTICA A TU FORMATO) ---
+def generar_garantia_pdf(fecha_str, modelo_auto, cristales_desc, tonalidad_desc, anos_garantia=1):
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter # 612 x 792 pt
     
-    # Coordenadas y texto a sobreescribir
+    # Encabezado
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(70, 690, "Presente")
+    c.drawString(380, 690, f"FECHA: {fecha_str}")
+    
+    # Título
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(width / 2, 640, "CARTA DE GARANTIA")
+    
+    # A quien corresponda
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(100, 680, f"FECHA: {fecha}")
-    c.drawString(100, 660, f"CLIENTE / VEHÍCULO: {cliente_vehiculo}")
-    c.drawString(100, 640, f"PAQUETE / SERVICIO: {paquete_desc}")
-    c.drawString(100, 620, f"MATERIAL INSTALADO: {material_desc}")
-    c.drawString(100, 600, f"IMPORTE TOTAL: ${total_cobrado:.2f}")
-    c.setFont("Helvetica", 9)
-    c.drawString(100, 570, "Garantía válida contra decoloración, desprendimiento o burbujas del adhesivo.")
+    c.drawString(70, 590, "AQUIEN CORRESPONDA:")
+    
+    # Detalle de la instalación
+    texto_linea1 = f"CON RESPECTO A LA INSTALACION DE AUTOMOVIL MODELO: {modelo_auto.upper()}"
+    texto_linea2 = f"{cristales_desc.upper()} ({tonalidad_desc.upper()})"
+    
+    c.drawString(70, 565, texto_linea1)
+    c.drawString(70, 550, texto_linea2)
+    
+    # Tiempo de garantía
+    c.setFont("Helvetica", 10)
+    c.drawString(70, 515, "Con la ")
+    c.setFont("Helvetica-Bold", 10)
+    texto_garantia = f"GARANTIA ES DE {anos_garantia} AÑO" if anos_garantia == 1 else f"GARANTIA ES DE {anos_garantia} AÑOS"
+    c.drawString(108, 515, texto_garantia)
+    
+    # Motivos de cobertura
+    c.drawString(70, 485, "POR DESPRENDIMIEMTO, BURBUJAS O DECOLORACION")
+    
+    # Cláusula de burbujas
+    c.setFont("Helvetica-Bold", 8.5)
+    c.drawString(70, 455, "( EN CASO DE BURBUJAS LA GARANTIA APLICA SIEMPRE Y CUANDO TENGA UNA")
+    c.drawString(70, 443, "CANTIDAD EXAGERADA Y AL IGUAL QUE SEAN VISIBLES A UNA DISTANCIA MINIMA")
+    c.drawString(70, 431, "DE 1 METRO. )")
+    
+    # Despedida
+    c.setFont("Helvetica", 10)
+    c.drawString(70, 395, "SIN MAS POR EL MOMENTO QUEDO A SUS ORDENES")
+    
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(70, 355, "POLARIZADOS ALVARADO")
+    
+    # Contacto
+    c.drawString(70, 305, "A T E N T A M E N T E")
+    c.drawString(70, 265, "CONTACTO:")
+    c.drawString(70, 240, "TELEFONO: 8129010370")
+    c.drawString(70, 220, "CORREO: polarizadosalvarado@gmail.com")
+    
+    # Nota importante
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(70, 185, "NOTA: LA GARANTIAS SE TRABAJAN EN EL TALLER, CON PREVIA CITA")
+    
+    # Firma
+    c.line(220, 135, 390, 135)
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(305, 120, "POLARIZADOS ALVARADO")
+    
     c.save()
-    buffer_overlay.seek(0)
+    buffer.seek(0)
+    return buffer
 
-    # Si existe plantilla_garantia.pdf en GitHub, estampar sobre ella
-    if os.path.exists("plantilla_garantia.pdf"):
-        reader_base = PdfReader("plantilla_garantia.pdf")
-        reader_overlay = PdfReader(buffer_overlay)
-        writer = PdfWriter()
-
-        page_base = reader_base.pages[0]
-        page_base.merge_page(reader_overlay.pages[0])
-        writer.add_page(page_base)
-
-        buffer_final = BytesIO()
-        writer.write(buffer_final)
-        buffer_final.seek(0)
-        return buffer_final
-    else:
-        # Retorna el generado básico si no se subió plantilla
-        return buffer_overlay
-
-# Título
+# --- TÍTULO Y NAVEGACIÓN ---
 st.title("🚗 Control de Inventario y Ventas - Polarizados")
 
 menu = st.sidebar.selectbox(
@@ -108,104 +136,116 @@ if menu == "Registrar Venta":
     if df_productos.empty:
         st.warning("⚠️ No hay productos en el inventario. Agrega productos en la pestaña 'Inventario / Stock'.")
     else:
-        # Tipo de Servicio
         categoria_servicio = st.radio(
             "Tipo de Servicio:", 
-            ["Paquete Automotriz", "Personalizado (1 Tono / 2 Tonos)", "Arquitectónico (Residencial/Comercial)"], 
+            ["Paquete Automotriz", "Personalizado / 2 Tonos", "Arquitectónico (Residencial/Comercial)"], 
             horizontal=True
         )
         
         opciones_prod = {f"{row['nombre']} (Disp: {row['stock']}m)": row['id'] for _, row in df_productos.iterrows()}
         materiales_usados = []
         precio_sugerido = 0.0
-        cliente_info = ""
-        detalle_paquete = ""
+        
+        # Datos específicos para la carta de garantía
+        modelo_auto = ""
+        cristales_instalados = ""
+        tonalidad_usada = ""
+        anos_garantia = 1
 
         # --- CASO 1: PAQUETES AUTOMOTRICES ---
         if categoria_servicio == "Paquete Automotriz":
-            cliente_info = st.text_input("Datos del Vehículo / Cliente:", placeholder="Ej. Honda Civic 2021 - Juan Pérez")
-            
+            col_a1, col_a2 = st.columns(2)
+            with col_a1:
+                modelo_auto = st.text_input("Modelo del Vehículo:", placeholder="Ej. CHEVROLET AVEO")
+            with col_a2:
+                anos_garantia = st.number_input("Años de Garantía:", min_value=1, max_value=10, value=1)
+
             col_p1, col_p2 = st.columns(2)
             with col_p1:
                 paquete = st.selectbox(
                     "Selecciona el Paquete:",
-                    ["Paquete Básico (4 Puertas + Aletas + Medallón)", "Paquete Completo (Parabrisas + 4 Puertas + Aletas + Medallón)"]
+                    ["Paquete Básico (Puertas Laterales, Aletas y Medallón)", "Paquete Completo (Parabrisas, Puertas Laterales, Aletas y Medallón)"]
                 )
             
-            # Sub-opción para Parabrisas
-            opcion_parabrisas = "N/A"
             if "Completo" in paquete:
                 with col_p2:
-                    opcion_parabrisas = st.radio("Detalle del Parabrisas:", ["Parabrisas Completo", "Solamente Franja / Parasol"], horizontal=True)
+                    det_parabrisas = st.radio("Detalle del Parabrisas:", ["Parabrisas Completo", "Solamente Franja / Parasol"], horizontal=True)
+                cristales_instalados = f"Parabrisas ({det_parabrisas}), Puertas Laterales, Aletas y Medallón"
             else:
                 with col_p2:
-                    incluir_franja_extra = st.checkbox("¿Agregar Franja / Parasol extra?")
-                    if incluir_franja_extra:
-                        opcion_parabrisas = "Solamente Franja / Parasol"
+                    inc_franja = st.checkbox("¿Incluye Franja extra en Parabrisas?")
+                cristales_instalados = "Puertas Laterales, Aletas y Medallón (Con Franja)" if inc_franja else "Puertas Laterales, Aletas y Medallón"
 
-            st.subheader("Materiales y Tonos")
-            es_dos_tonos = st.checkbox("¿Instalación en 2 Tonos (combinado)?")
+            st.subheader("Selección de Material y Tonalidad")
+            es_dos_tonos = st.checkbox("¿Instalación en 2 Tonos (Combinado)?")
 
             if not es_dos_tonos:
-                p_sel = st.selectbox("Material / Película:", list(opciones_prod.keys()))
-                p_id = opciones_prod[p_sel]
-                p_info = df_productos[df_productos['id'] == p_id].iloc[0]
-                
-                # Cálculo sugerido de metros según el paquete
-                cant_metros = 3.0 if "Completo" in paquete else 2.5
-                if opcion_parabrisas == "Solamente Franja / Parasol" and "Básico" in paquete:
-                    cant_metros += 0.5
-                
-                cant = st.number_input("Metros totales a descontar:", min_value=0.1, value=cant_metros, step=0.5)
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
+                    p_id = opciones_prod[p_sel]
+                    p_info = df_productos[df_productos['id'] == p_id].iloc[0]
+                with col_m2:
+                    tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 20% / 35%")
+
+                cant_m = 3.0 if "Completo" in paquete else 2.5
+                cant = st.number_input("Metros a descontar de inventario:", min_value=0.1, value=cant_m, step=0.5)
                 precio_sugerido = p_info['precio_venta'] * cant
                 materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
-                detalle_paquete = f"{paquete} | Parabrisas: {opcion_parabrisas}"
             else:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown("**Tono 1 (4 Puertas, Aletas y Medallón)**")
-                    p1_sel = st.selectbox("Material Tono 1:", list(opciones_prod.keys()), key="pk1")
+                    st.markdown("**Tono 1 (Puertas / Medallón)**")
+                    p1_sel = st.selectbox("Material 1:", list(opciones_prod.keys()), key="pk1")
                     p1_id = opciones_prod[p1_sel]
                     p1_info = df_productos[df_productos['id'] == p1_id].iloc[0]
+                    t1 = st.text_input("Tonalidad Tono 1:", placeholder="Ej. 20%", key="t1")
                     m1 = st.number_input("Metros Tono 1:", min_value=0.1, value=2.0, step=0.5, key="m_pk1")
 
                 with c2:
                     st.markdown("**Tono 2 (Parabrisas o Piloto/Copiloto)**")
-                    p2_sel = st.selectbox("Material Tono 2:", list(opciones_prod.keys()), key="pk2")
+                    p2_sel = st.selectbox("Material 2:", list(opciones_prod.keys()), key="pk2")
                     p2_id = opciones_prod[p2_sel]
                     p2_info = df_productos[df_productos['id'] == p2_id].iloc[0]
-                    m2 = st.number_input("Metros Tono 2:", min_value=0.1, value=1.0 if "Completo" in paquete else 0.5, step=0.5, key="m_pk2")
+                    t2 = st.text_input("Tonalidad Tono 2:", placeholder="Ej. 35%", key="t2")
+                    m2 = st.number_input("Metros Tono 2:", min_value=0.1, value=1.0, step=0.5, key="m_pk2")
 
+                tonalidad_usada = f"{t1} y {t2}" if t1 and t2 else "2 Tonos Combinados"
                 precio_sugerido = (p1_info['precio_venta'] * m1) + (p2_info['precio_venta'] * m2)
                 materiales_usados = [
                     (p1_id, p1_info['nombre'], m1, p1_info['stock']),
                     (p2_id, p2_info['nombre'], m2, p2_info['stock'])
                 ]
-                detalle_paquete = f"{paquete} (2 Tonos) | Parabrisas: {opcion_parabrisas}"
 
         # --- CASO 2: PERSONALIZADO ---
-        elif categoria_servicio == "Personalizado (1 Tono / 2 Tonos)":
-            cliente_info = st.text_input("Datos del Vehículo / Cliente:", placeholder="Ej. Sedan Mazda 3")
+        elif categoria_servicio == "Personalizado / 2 Tonos":
+            modelo_auto = st.text_input("Modelo / Datos del Vehículo:", placeholder="Ej. NISSAN SENTRA")
+            cristales_instalados = st.text_input("Cristales Trabajados:", placeholder="Ej. Piloto y Copiloto")
+            tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 15%")
+            anos_garantia = st.number_input("Años de Garantía:", min_value=1, max_value=10, value=1)
+            
             p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
             p_id = opciones_prod[p_sel]
             p_info = df_productos[df_productos['id'] == p_id].iloc[0]
             cant = st.number_input("Metros Utilizados:", min_value=0.1, value=2.0, step=0.5)
             precio_sugerido = p_info['precio_venta'] * cant
             materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
-            detalle_paquete = "Trabajo Personalizado"
 
         # --- CASO 3: ARQUITECTÓNICO ---
         else:
             subtipo = st.selectbox("Tipo de Inmueble:", ["Residencial / Casa", "Local Comercial", "Industrial / Oficinas"])
             direccion = st.text_input("Cliente / Dirección:", placeholder="Ej. Local 4 - Plaza Central")
-            cliente_info = f"[{subtipo}] {direccion}"
+            modelo_auto = f"[{subtipo}] {direccion}"
+            cristales_instalados = "Ventanas / Cancel / Fachada"
+            tonalidad_usada = st.text_input("Película / Tonalidad:", placeholder="Ej. Control Solar 20%")
+            anos_garantia = st.number_input("Años de Garantía:", min_value=1, max_value=10, value=3)
+            
             p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
             p_id = opciones_prod[p_sel]
             p_info = df_productos[df_productos['id'] == p_id].iloc[0]
             cant = st.number_input("Metros de Rollo Utilizados:", min_value=0.1, value=5.0, step=1.0)
             precio_sugerido = p_info['precio_venta'] * cant
             materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
-            detalle_paquete = f"Arquitectónico - {subtipo}"
 
         # COBRO Y REGISTRO
         st.divider()
@@ -215,44 +255,43 @@ if menu == "Registrar Venta":
         if st.button("✅ Confirmar Venta y Generar Garantía", type="primary"):
             stock_insuficiente = any(disp < c for _, _, c, disp in materiales_usados)
 
-            if not cliente_info.strip():
-                st.warning("⚠ Por favor ingresa el nombre del cliente o datos del vehículo.")
+            if not modelo_auto.strip():
+                st.warning("⚠ Por favor ingresa el modelo del vehículo o cliente.")
             elif stock_insuficiente:
                 st.error("❌ Stock insuficiente en inventario para alguno de los materiales.")
             else:
                 conn = conectar_db()
                 cursor = conn.cursor()
                 fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                fecha_corta = datetime.now().strftime("%d/%m/%Y")
 
-                mat_nombres = []
+                desc_servicio = f"{modelo_auto} - {cristales_instalados} ({tonalidad_usada})"
                 for mat_id, nombre, cant, _ in materiales_usados:
                     cursor.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, mat_id))
                     subtotal = total / len(materiales_usados)
-                    desc_venta = f"{cliente_info} - {detalle_paquete}"
                     cursor.execute(
                         "INSERT INTO ventas (producto_id, vehiculo, cantidad, total, fecha) VALUES (?, ?, ?, ?, ?)",
-                        (mat_id, desc_venta, cant, subtotal, fecha_actual)
+                        (mat_id, desc_servicio, cant, subtotal, fecha_actual)
                     )
-                    mat_nombres.append(nombre)
 
                 conn.commit()
                 conn.close()
 
                 st.success(f"🎉 Venta registrada con éxito. Total: ${total:.2f}")
 
-                # Generación de la Carta de Garantía en PDF
+                # Generación automática del PDF de Garantía
                 pdf_bytes = generar_garantia_pdf(
-                    cliente_vehiculo=cliente_info,
-                    paquete_desc=detalle_paquete,
-                    material_desc=", ".join(mat_nombres),
-                    fecha=fecha_actual[:10],
-                    total_cobrado=total
+                    fecha_str=fecha_corta,
+                    modelo_auto=modelo_auto,
+                    cristales_desc=cristales_instalados,
+                    tonalidad_desc=tonalidad_usada if tonalidad_usada else "Estándar",
+                    anos_garantia=anos_garantia
                 )
 
                 st.download_button(
                     label="📄 Descargar Carta de Garantía (PDF)",
                     data=pdf_bytes,
-                    file_name=f"Garantia_{cliente_info.replace(' ', '_')}.pdf",
+                    file_name=f"Garantia_{modelo_auto.replace(' ', '_')}.pdf",
                     mime="application/pdf"
                 )
 
