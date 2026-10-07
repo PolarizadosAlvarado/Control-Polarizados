@@ -157,7 +157,7 @@ if menu == "Registrar Venta":
     else:
         categoria_servicio = st.radio(
             "Tipo de Servicio:", 
-            ["Paquete Automotriz", "Personalizado / 2 Tonos", "Arquitectónico (Residencial/Comercial)"], 
+            ["Paquete Automotriz Completo/Básico", "Pieza / Ventana Individual", "Personalizado / 2 Tonos", "Arquitectónico (Residencial/Comercial)"], 
             horizontal=True
         )
         
@@ -170,7 +170,8 @@ if menu == "Registrar Venta":
         tonalidad_usada = ""
         anos_garantia = 1
 
-        if categoria_servicio == "Paquete Automotriz":
+        # --- OPCIÓN A: PAQUETES AUTOMOTRICES ---
+        if categoria_servicio == "Paquete Automotriz Completo/Básico":
             col_a1, col_a2 = st.columns(2)
             with col_a1:
                 modelo_auto = st.text_input("Modelo del Vehículo:", placeholder="Ej. CHEVROLET AVEO")
@@ -234,6 +235,54 @@ if menu == "Registrar Venta":
                     (p2_id, p2_info['nombre'], m2, p2_info['stock'])
                 ]
 
+        # --- OPCIÓN B: PIEZA / VENTANA INDIVIDUAL ---
+        elif categoria_servicio == "Pieza / Ventana Individual":
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                modelo_auto = st.text_input("Modelo del Vehículo:", placeholder="Ej. NISSAN MARCH")
+            with col_v2:
+                anos_garantia = st.number_input("Años de Garantía:", min_value=1, max_value=10, value=1)
+
+            st.markdown("**Selecciona las Ventanas / Piezas a Polarizar:**")
+            
+            c_p1, c_p2, c_p3 = st.columns(3)
+            with c_p1:
+                v_piloto = st.checkbox("Ventana Piloto")
+                v_copiloto = st.checkbox("Ventana Copiloto")
+            with c_p2:
+                v_pas_izq = st.checkbox("Pasajero Trasero Izquierdo")
+                v_pas_der = st.checkbox("Pasajero Trasero Derecho")
+            with c_p3:
+                v_medallon = st.checkbox("Medallón")
+                v_aletas = st.checkbox("Aletas / Esquinas")
+                v_parabrisas_ind = st.checkbox("Parabrisas Completo / Franja")
+
+            piezas_seleccionadas = []
+            if v_piloto: piezas_seleccionadas.append("Ventana Piloto")
+            if v_copiloto: piezas_seleccionadas.append("Ventana Copiloto")
+            if v_pas_izq: piezas_seleccionadas.append("Pasajero Trasero Izquierdo")
+            if v_pas_der: piezas_seleccionadas.append("Pasajero Trasero Derecho")
+            if v_medallon: piezas_seleccionadas.append("Medallón")
+            if v_aletas: piezas_seleccionadas.append("Aletas")
+            if v_parabrisas_ind: piezas_seleccionadas.append("Parabrisas")
+
+            cristales_instalados = ", ".join(piezas_seleccionadas) if piezas_seleccionadas else "Pieza Individual"
+
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
+                p_id = opciones_prod[p_sel]
+                p_info = df_productos[df_productos['id'] == p_id].iloc[0]
+            with col_m2:
+                tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 20%")
+
+            # Sugerir metros aproximados según número de piezas elegidas
+            m_sugeridos = max(0.5, len(piezas_seleccionadas) * 0.5)
+            cant = st.number_input("Metros a descontar de inventario:", min_value=0.1, value=m_sugeridos, step=0.5)
+            precio_sugerido = p_info['precio_venta'] * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
+
+        # --- OPCIÓN C: PERSONALIZADO ---
         elif categoria_servicio == "Personalizado / 2 Tonos":
             modelo_auto = st.text_input("Modelo / Datos del Vehículo:", placeholder="Ej. NISSAN SENTRA")
             cristales_instalados = st.text_input("Cristales Trabajados:", placeholder="Ej. Piloto y Copiloto")
@@ -247,6 +296,7 @@ if menu == "Registrar Venta":
             precio_sugerido = p_info['precio_venta'] * cant
             materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
 
+        # --- OPCIÓN D: ARQUITECTÓNICO ---
         else:
             subtipo = st.selectbox("Tipo de Inmueble:", ["Residencial / Casa", "Local Comercial", "Industrial / Oficinas"])
             direccion = st.text_input("Cliente / Dirección:", placeholder="Ej. Local 4 - Plaza Central")
@@ -294,7 +344,7 @@ if menu == "Registrar Venta":
                     conn.commit()
                     conn.close()
 
-                    # Generar PDF y almacenar en el estado de sesión de Streamlit
+                    # Guardar el PDF generado en el estado de sesión
                     st.session_state["pdf_garantia"] = generar_garantia_pdf(
                         fecha_str=fecha_corta,
                         modelo_auto=modelo_auto,
@@ -305,7 +355,7 @@ if menu == "Registrar Venta":
                     st.session_state["nombre_garantia"] = f"Garantia_{modelo_auto.replace(' ', '_')}.pdf"
                     st.success(f"🎉 Venta registrada con éxito. Total: ${total:.2f}")
 
-        # Muestra el botón de descarga siempre que haya un PDF en memoria
+        # Botón para descargar el PDF de garantía
         if "pdf_garantia" in st.session_state and st.session_state["pdf_garantia"]:
             with col_btn2:
                 st.download_button(
