@@ -1,9 +1,13 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
 import os
+import json
+
+# Importaciones para Google Sheets
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Importaciones para generación de PDF de Garantía
 from reportlab.lib.pagesizes import letter
@@ -13,43 +17,32 @@ from reportlab.lib.colors import HexColor
 # Configuración de la página
 st.set_page_config(page_title="Control de Polarizados", page_icon="🚗", layout="wide")
 
-# --- CONEXIÓN A BASE DE DATOS ---
-def conectar_db():
-    conn = sqlite3.connect("polarizado_db.sqlite")
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS productos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL,
-            tipo_pelicula TEXT,
-            stock REAL NOT NULL,
-            precio_venta REAL NOT NULL
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ventas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            producto_id INTEGER,
-            vehiculo TEXT,
-            cantidad REAL,
-            total REAL,
-            fecha TEXT,
-            FOREIGN KEY(producto_id) REFERENCES productos(id)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS gastos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            concepto TEXT NOT NULL,
-            categoria TEXT NOT NULL,
-            monto REAL NOT NULL,
-            fecha TEXT
-        )
-    ''')
-    conn.commit()
-    return conn
+# --- CONEXIÓN A GOOGLE SHEETS ---
+@st.cache_resource
+def conectar_gsheets():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    # Lee las credenciales desde los Secrets de Streamlit o archivo local
+    if "gcp_service_account" in st.secrets:
+        creds_dict = json.loads(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    elif os.path.exists("credentials.json"):
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    else:
+        st.error("❌ No se encontraron las credenciales de Google Sheets en Secrets.")
+        st.stop()
+        
+    client = gspread.authorize(creds)
+    sheet = client.open("Control_Polarizados_DB")
+    return sheet
 
-conectar_db()
+def obtener_df(sheet_name):
+    sh = conectar_gsheets()
+    worksheet = sh.worksheet(sheet_name)
+    data = worksheet.get_all_records()
+    return pd.DataFrame(data), worksheet
 
 # --- FUNCIÓN GENERADORA DE CARTA DE GARANTÍA ---
 def generar_garantia_pdf(fecha_str, modelo_auto, cristales_desc, tonalidad_desc, anos_garantia=1):
@@ -136,7 +129,7 @@ def generar_garantia_pdf(fecha_str, modelo_auto, cristales_desc, tonalidad_desc,
     buffer.seek(0)
     return buffer
 
-# --- TÍTULO Y NAVEGACIÓN ---
+# --- NAVEGACIÓN ---
 st.title("🚗 Control de Inventario y Ventas - Polarizados")
 
 menu = st.sidebar.selectbox(
@@ -148,12 +141,10 @@ menu = st.sidebar.selectbox(
 if menu == "Registrar Venta":
     st.header("🛒 Registrar Nueva Venta / Servicio")
     
-    conn = conectar_db()
-    df_productos = pd.read_sql_query("SELECT id, nombre, stock, precio_venta FROM productos", conn)
-    conn.close()
+    df_productos, ws_productos = obtener_df("productos")
     
     if df_productos.empty:
-        st.warning("⚠️ No hay productos en el inventario. Agrega productos en la pestaña 'Inventario / Stock'.")
+        st.warning("⚠️ No hay productos en el inventario. Agrega productos en 'Inventario / Stock'.")
     else:
         categoria_servicio = st.radio(
             "Tipo de Servicio:", 
@@ -170,7 +161,6 @@ if menu == "Registrar Venta":
         tonalidad_usada = ""
         anos_garantia = 1
 
-        # --- OPCIÓN A: PAQUETES AUTOMOTRICES ---
         if categoria_servicio == "Paquete Automotriz Completo/Básico":
             col_a1, col_a2 = st.columns(2)
             with col_a1:
@@ -208,8 +198,8 @@ if menu == "Registrar Venta":
 
                 cant_m = 3.0 if "Completo" in paquete else 2.5
                 cant = st.number_input("Metros a descontar de inventario:", min_value=0.1, value=cant_m, step=0.5)
-                precio_sugerido = p_info['precio_venta'] * cant
-                materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
+                precio_sugerido = float(p_info['precio_venta']) * cant
+                materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
             else:
                 c1, c2 = st.columns(2)
                 with c1:
@@ -229,13 +219,12 @@ if menu == "Registrar Venta":
                     m2 = st.number_input("Metros Tono 2:", min_value=0.1, value=1.0, step=0.5, key="m_pk2")
 
                 tonalidad_usada = f"{t1} y {t2}" if t1 and t2 else "2 Tonos Combinados"
-                precio_sugerido = (p1_info['precio_venta'] * m1) + (p2_info['precio_venta'] * m2)
+                precio_sugerido = (float(p1_info['precio_venta']) * m1) + (float(p2_info['precio_venta']) * m2)
                 materiales_usados = [
-                    (p1_id, p1_info['nombre'], m1, p1_info['stock']),
-                    (p2_id, p2_info['nombre'], m2, p2_info['stock'])
+                    (p1_id, p1_info['nombre'], m1, float(p1_info['stock'])),
+                    (p2_id, p2_info['nombre'], m2, float(p2_info['stock']))
                 ]
 
-        # --- OPCIÓN B: PIEZA / VENTANA INDIVIDUAL ---
         elif categoria_servicio == "Pieza / Ventana Individual":
             col_v1, col_v2 = st.columns(2)
             with col_v1:
@@ -276,13 +265,11 @@ if menu == "Registrar Venta":
             with col_m2:
                 tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 20%")
 
-            # Sugerir metros aproximados según número de piezas elegidas
             m_sugeridos = max(0.5, len(piezas_seleccionadas) * 0.5)
             cant = st.number_input("Metros a descontar de inventario:", min_value=0.1, value=m_sugeridos, step=0.5)
-            precio_sugerido = p_info['precio_venta'] * cant
-            materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
+            precio_sugerido = float(p_info['precio_venta']) * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
 
-        # --- OPCIÓN C: PERSONALIZADO ---
         elif categoria_servicio == "Personalizado / 2 Tonos":
             modelo_auto = st.text_input("Modelo / Datos del Vehículo:", placeholder="Ej. NISSAN SENTRA")
             cristales_instalados = st.text_input("Cristales Trabajados:", placeholder="Ej. Piloto y Copiloto")
@@ -293,10 +280,9 @@ if menu == "Registrar Venta":
             p_id = opciones_prod[p_sel]
             p_info = df_productos[df_productos['id'] == p_id].iloc[0]
             cant = st.number_input("Metros Utilizados:", min_value=0.1, value=2.0, step=0.5)
-            precio_sugerido = p_info['precio_venta'] * cant
-            materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
+            precio_sugerido = float(p_info['precio_venta']) * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
 
-        # --- OPCIÓN D: ARQUITECTÓNICO ---
         else:
             subtipo = st.selectbox("Tipo de Inmueble:", ["Residencial / Casa", "Local Comercial", "Industrial / Oficinas"])
             direccion = st.text_input("Cliente / Dirección:", placeholder="Ej. Local 4 - Plaza Central")
@@ -309,8 +295,8 @@ if menu == "Registrar Venta":
             p_id = opciones_prod[p_sel]
             p_info = df_productos[df_productos['id'] == p_id].iloc[0]
             cant = st.number_input("Metros de Rollo Utilizados:", min_value=0.1, value=5.0, step=1.0)
-            precio_sugerido = p_info['precio_venta'] * cant
-            materiales_usados = [(p_id, p_info['nombre'], cant, p_info['stock'])]
+            precio_sugerido = float(p_info['precio_venta']) * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
 
         st.divider()
         usar_custom = st.checkbox(f"Modificar precio sugerido (${precio_sugerido:.2f})")
@@ -327,24 +313,26 @@ if menu == "Registrar Venta":
                 elif stock_insuficiente:
                     st.error("❌ Stock insuficiente en inventario para alguno de los materiales.")
                 else:
-                    conn = conectar_db()
-                    cursor = conn.cursor()
+                    _, ws_ventas = obtener_df("ventas")
                     fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     fecha_corta = datetime.now().strftime("%d/%m/%Y")
-
                     desc_servicio = f"{modelo_auto} - {cristales_instalados} ({tonalidad_usada})"
+
+                    # Actualizar Stock y Guardar en Google Sheets
                     for mat_id, nombre, cant, _ in materiales_usados:
-                        cursor.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, mat_id))
+                        # Buscar fila en la hoja de productos
+                        cell = ws_productos.find(str(mat_id))
+                        row_num = cell.row
+                        stock_actual = float(ws_productos.cell(row_num, 4).value)
+                        nuevo_stock = stock_actual - cant
+                        ws_productos.update_cell(row_num, 4, nuevo_stock)
+
+                        # Agregar nueva venta
+                        num_ventas = len(ws_ventas.get_all_records()) + 1
                         subtotal = total / len(materiales_usados)
-                        cursor.execute(
-                            "INSERT INTO ventas (producto_id, vehiculo, cantidad, total, fecha) VALUES (?, ?, ?, ?, ?)",
-                            (mat_id, desc_servicio, cant, subtotal, fecha_actual)
-                        )
+                        ws_ventas.append_row([num_ventas, mat_id, desc_servicio, cant, subtotal, fecha_actual])
 
-                    conn.commit()
-                    conn.close()
-
-                    # Guardar el PDF generado en el estado de sesión
+                    # Generar PDF y guardar en session state
                     st.session_state["pdf_garantia"] = generar_garantia_pdf(
                         fecha_str=fecha_corta,
                         modelo_auto=modelo_auto,
@@ -353,9 +341,8 @@ if menu == "Registrar Venta":
                         anos_garantia=anos_garantia
                     )
                     st.session_state["nombre_garantia"] = f"Garantia_{modelo_auto.replace(' ', '_')}.pdf"
-                    st.success(f"🎉 Venta registrada con éxito. Total: ${total:.2f}")
+                    st.success(f"🎉 Venta registrada con éxito y guardada en Google Sheets. Total: ${total:.2f}")
 
-        # Botón para descargar el PDF de garantía
         if "pdf_garantia" in st.session_state and st.session_state["pdf_garantia"]:
             with col_btn2:
                 st.download_button(
@@ -378,21 +365,18 @@ elif menu == "Registrar Gasto":
         
     if st.button("💾 Guardar Gasto"):
         if concepto and monto > 0:
-            conn = conectar_db()
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO gastos (concepto, categoria, monto, fecha) VALUES (?, ?, ?, ?)",
-                           (concepto, categoria, monto, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            conn.commit()
-            conn.close()
-            st.success(f"✅ Gasto de ${monto:.2f} registrado.")
+            df_g, ws_gastos = obtener_df("gastos")
+            next_id = len(df_g) + 1
+            ws_gastos.append_row([next_id, concepto, categoria, monto, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            st.success(f"✅ Gasto de ${monto:.2f} registrado en Google Sheets.")
 
 # --- OPCIÓN 3: INVENTARIO / STOCK ---
 elif menu == "Inventario / Stock":
     st.header("📦 Control de Inventario")
     tab1, tab2, tab3 = st.tabs(["Ver Inventario", "Agregar Producto", "Reabastecer / Borrar"])
-    conn = conectar_db()
+    df_inv, ws_productos = obtener_df("productos")
+    
     with tab1:
-        df_inv = pd.read_sql_query("SELECT id AS ID, nombre AS Producto, tipo_pelicula AS Tipo, stock AS 'Stock (m)', precio_venta AS 'Precio/m ($)' FROM productos", conn)
         st.dataframe(df_inv, use_container_width=True)
     with tab2:
         nom = st.text_input("Nombre del Producto:")
@@ -400,38 +384,32 @@ elif menu == "Inventario / Stock":
         stk = st.number_input("Stock Inicial (Metros):", min_value=0.0, step=5.0)
         prc = st.number_input("Precio Estimado por Metro ($):", min_value=0.0, step=50.0)
         if st.button("➕ Guardar"):
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO productos (nombre, tipo_pelicula, stock, precio_venta) VALUES (?, ?, ?, ?)", (nom, tipo, stk, prc))
-            conn.commit()
-            st.success("✅ Producto agregado.")
+            next_id = len(df_inv) + 1
+            ws_productos.append_row([next_id, nom, tipo, stk, prc])
+            st.success("✅ Producto agregado a Google Sheets.")
             st.rerun()
     with tab3:
-        df_prods = pd.read_sql_query("SELECT id, nombre FROM productos", conn)
-        if not df_prods.empty:
-            prod_map = {f"{row['nombre']} (ID: {row['id']})": row['id'] for _, row in df_prods.iterrows()}
+        if not df_inv.empty:
+            prod_map = {f"{row['nombre']} (ID: {row['id']})": row['id'] for _, row in df_inv.iterrows()}
             p_reab = st.selectbox("Producto:", list(prod_map.keys()))
             m_sumar = st.number_input("Metros a Sumar:", min_value=0.1, step=5.0)
             if st.button("📈 Reabastecer"):
-                cursor = conn.cursor()
-                cursor.execute("UPDATE productos SET stock = stock + ? WHERE id = ?", (m_sumar, prod_map[p_reab]))
-                conn.commit()
-                st.success("✅ Stock actualizado.")
+                target_id = prod_map[p_reab]
+                cell = ws_productos.find(str(target_id))
+                row_num = cell.row
+                stk_actual = float(ws_productos.cell(row_num, 4).value)
+                ws_productos.update_cell(row_num, 4, stk_actual + m_sumar)
+                st.success("✅ Stock actualizado en Google Sheets.")
                 st.rerun()
-    conn.close()
 
 # --- OPCIÓN 4: REPORTES Y BALANCE ---
 elif menu == "Reportes y Balance":
     st.header("📊 Balance Financiero y Reportes")
-    conn = conectar_db()
-    df_ventas = pd.read_sql_query('''
-        SELECT v.id AS ID, p.nombre AS Material, v.vehiculo AS 'Detalle Servicio', v.cantidad AS 'Metros (m)', v.total AS 'Total ($)', v.fecha AS Fecha 
-        FROM ventas v JOIN productos p ON v.producto_id = p.id ORDER BY v.fecha DESC
-    ''', conn)
-    df_gastos = pd.read_sql_query("SELECT id AS ID, concepto AS Concepto, categoria AS Categoría, monto AS 'Monto ($)', fecha AS Fecha FROM gastos ORDER BY fecha DESC", conn)
-    conn.close()
+    df_ventas, _ = obtener_df("ventas")
+    df_gastos, _ = obtener_df("gastos")
     
-    t_v = df_ventas['Total ($)'].sum() if not df_ventas.empty else 0.0
-    t_g = df_gastos['Monto ($)'].sum() if not df_gastos.empty else 0.0
+    t_v = pd.to_numeric(df_ventas['total']).sum() if not df_ventas.empty else 0.0
+    t_g = pd.to_numeric(df_gastos['monto']).sum() if not df_gastos.empty else 0.0
     
     c1, c2, c3 = st.columns(3)
     c1.metric("💵 Total Ingresos", f"${t_v:.2f}")
