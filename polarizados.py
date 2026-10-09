@@ -337,24 +337,4 @@ if menu == "Registrar Venta":
                     fecha_corta = datetime.now().strftime("%d/%m/%Y")
                     desc_servicio = f"{modelo_auto} - {cristales_instalados} ({tonalidad_usada})"
 
-                    # Actualizar Stock y Guardar en Google Sheets
-                    for mat_id, nombre, cant, _ in materiales_usados:
-                        cell = ws_productos.find(str(mat_id))
-                        row_num = cell.row
-                        stock_actual = float(ws_productos.cell(row_num, 4).value)
-                        nuevo_stock = stock_actual - cant
-                        ws_productos.update_cell(row_num, 4, nuevo_stock)
-
-                        num_ventas = len(ws_ventas.get_all_records()) + 1
-                        subtotal = total / len(materiales_usados)
-                        ws_ventas.append_row([num_ventas, mat_id, desc_servicio, cant, subtotal, fecha_actual])
-
-                    st.session_state["pdf_garantia"] = generar_garantia_pdf(
-                        fecha_str=fecha_corta,
-                        modelo_auto=modelo_auto,
-                        cristales_desc=cristales_instalados,
-                        tonalidad_desc=tonalidad_usada if tonalidad_usada else "Estándar",
-                        anos_garantia=anos_garantia
-                    )
-                    st.session_state["nombre_garantia"] = f"Garantia_{modelo_auto.replace(' ', '_')}.pdf"
-                    st.success(f
+                    # Actualizar Stock y Guardar en
