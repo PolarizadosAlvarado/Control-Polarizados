@@ -24,10 +24,16 @@ def conectar_gsheets():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    # Lee las credenciales desde Streamlit Secrets (funciona como dict o str)
+    
+    # Manejo de Secrets en Streamlit Cloud
     if "gcp_service_account" in st.secrets:
         sec = st.secrets["gcp_service_account"]
         creds_dict = dict(sec) if not isinstance(sec, str) else json.loads(sec)
+        
+        # Corrección para formatear la private_key de Google
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     elif os.path.exists("credentials.json"):
         creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
@@ -176,13 +182,17 @@ if menu == "Registrar Venta":
                     ["Paquete Básico (Puertas Laterales, Aletas y Medallón)", "Paquete Completo (Parabrisas, Puertas Laterales, Aletas y Medallón)"]
                 )
             
+            tono_parabrisas = ""
             if "Completo" in paquete:
                 with col_p2:
                     det_parabrisas = st.radio("Detalle del Parabrisas:", ["Parabrisas Completo", "Solamente Franja / Parasol"], horizontal=True)
+                    tono_parabrisas = st.text_input("Tonalidad Parabrisas (%):", placeholder="Ej. 35% o 50%", key="t_parab")
                 cristales_instalados = f"Parabrisas ({det_parabrisas}), Puertas Laterales, Aletas y Medallón"
             else:
                 with col_p2:
                     inc_franja = st.checkbox("¿Incluye Franja extra en Parabrisas?")
+                    if inc_franja:
+                        tono_parabrisas = st.text_input("Tonalidad Franja Parabrisas (%):", placeholder="Ej. 5%", key="t_franja")
                 cristales_instalados = "Puertas Laterales, Aletas y Medallón (Con Franja)" if inc_franja else "Puertas Laterales, Aletas y Medallón"
 
             st.subheader("Selección de Material y Tonalidad")
@@ -195,7 +205,12 @@ if menu == "Registrar Venta":
                     p_id = opciones_prod[p_sel]
                     p_info = df_productos[df_productos['id'] == p_id].iloc[0]
                 with col_m2:
-                    tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 20% / 35%")
+                    tono_general = st.text_input("Tonalidad Puertas/Medallón (%):", placeholder="Ej. 20%")
+
+                if tono_parabrisas.strip():
+                    tonalidad_usada = f"Parabrisas: {tono_parabrisas} / Laterales y Medallón: {tono_general}"
+                else:
+                    tonalidad_usada = tono_general
 
                 cant_m = 3.0 if "Completo" in paquete else 2.5
                 cant = st.number_input("Metros a descontar de inventario:", min_value=0.1, value=cant_m, step=0.5)
@@ -220,6 +235,9 @@ if menu == "Registrar Venta":
                     m2 = st.number_input("Metros Tono 2:", min_value=0.1, value=1.0, step=0.5, key="m_pk2")
 
                 tonalidad_usada = f"{t1} y {t2}" if t1 and t2 else "2 Tonos Combinados"
+                if tono_parabrisas.strip():
+                    tonalidad_usada += f" (Parabrisas: {tono_parabrisas})"
+
                 precio_sugerido = (float(p1_info['precio_venta']) * m1) + (float(p2_info['precio_venta']) * m2)
                 materiales_usados = [
                     (p1_id, p1_info['nombre'], m1, float(p1_info['stock'])),
@@ -249,3 +267,94 @@ if menu == "Registrar Venta":
 
             piezas_seleccionadas = []
             if v_piloto: piezas_seleccionadas.append("Ventana Piloto")
+            if v_copiloto: piezas_seleccionadas.append("Ventana Copiloto")
+            if v_pas_izq: piezas_seleccionadas.append("Pasajero Trasero Izquierdo")
+            if v_pas_der: piezas_seleccionadas.append("Pasajero Trasero Derecho")
+            if v_medallon: piezas_seleccionadas.append("Medallón")
+            if v_aletas: piezas_seleccionadas.append("Aletas")
+            if v_parabrisas_ind: piezas_seleccionadas.append("Parabrisas")
+
+            cristales_instalados = ", ".join(piezas_seleccionadas) if piezas_seleccionadas else "Pieza Individual"
+
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
+                p_id = opciones_prod[p_sel]
+                p_info = df_productos[df_productos['id'] == p_id].iloc[0]
+            with col_m2:
+                tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 20%")
+
+            m_sugeridos = max(0.5, len(piezas_seleccionadas) * 0.5)
+            cant = st.number_input("Metros a descontar de inventario:", min_value=0.1, value=m_sugeridos, step=0.5)
+            precio_sugerido = float(p_info['precio_venta']) * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
+
+        elif categoria_servicio == "Personalizado / 2 Tonos":
+            modelo_auto = st.text_input("Modelo / Datos del Vehículo:", placeholder="Ej. NISSAN SENTRA")
+            cristales_instalados = st.text_input("Cristales Trabajados:", placeholder="Ej. Piloto y Copiloto")
+            tonalidad_usada = st.text_input("Tonalidad (%):", placeholder="Ej. 15%")
+            anos_garantia = st.number_input("Años de Garantía:", min_value=1, max_value=10, value=1)
+            
+            p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
+            p_id = opciones_prod[p_sel]
+            p_info = df_productos[df_productos['id'] == p_id].iloc[0]
+            cant = st.number_input("Metros Utilizados:", min_value=0.1, value=2.0, step=0.5)
+            precio_sugerido = float(p_info['precio_venta']) * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
+
+        else:
+            subtipo = st.selectbox("Tipo de Inmueble:", ["Residencial / Casa", "Local Comercial", "Industrial / Oficinas"])
+            direccion = st.text_input("Cliente / Dirección:", placeholder="Ej. Local 4 - Plaza Central")
+            modelo_auto = f"[{subtipo}] {direccion}"
+            cristales_instalados = "Ventanas / Cancel / Fachada"
+            tonalidad_usada = st.text_input("Película / Tonalidad:", placeholder="Ej. Control Solar 20%")
+            anos_garantia = st.number_input("Años de Garantía:", min_value=1, max_value=10, value=3)
+            
+            p_sel = st.selectbox("Material:", list(opciones_prod.keys()))
+            p_id = opciones_prod[p_sel]
+            p_info = df_productos[df_productos['id'] == p_id].iloc[0]
+            cant = st.number_input("Metros de Rollo Utilizados:", min_value=0.1, value=5.0, step=1.0)
+            precio_sugerido = float(p_info['precio_venta']) * cant
+            materiales_usados = [(p_id, p_info['nombre'], cant, float(p_info['stock']))]
+
+        st.divider()
+        usar_custom = st.checkbox(f"Modificar precio sugerido (${precio_sugerido:.2f})")
+        total = st.number_input("Monto Total a Cobrar ($):", min_value=0.0, value=precio_sugerido) if usar_custom else precio_sugerido
+
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            if st.button("✅ Confirmar Venta y Generar Garantía", type="primary", use_container_width=True):
+                stock_insuficiente = any(disp < c for _, _, c, disp in materiales_usados)
+
+                if not modelo_auto.strip():
+                    st.warning("⚠ Por favor ingresa el modelo del vehículo o datos del inmueble.")
+                elif stock_insuficiente:
+                    st.error("❌ Stock insuficiente en inventario para alguno de los materiales.")
+                else:
+                    _, ws_ventas = obtener_df("ventas")
+                    fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    fecha_corta = datetime.now().strftime("%d/%m/%Y")
+                    desc_servicio = f"{modelo_auto} - {cristales_instalados} ({tonalidad_usada})"
+
+                    # Actualizar Stock y Guardar en Google Sheets
+                    for mat_id, nombre, cant, _ in materiales_usados:
+                        cell = ws_productos.find(str(mat_id))
+                        row_num = cell.row
+                        stock_actual = float(ws_productos.cell(row_num, 4).value)
+                        nuevo_stock = stock_actual - cant
+                        ws_productos.update_cell(row_num, 4, nuevo_stock)
+
+                        num_ventas = len(ws_ventas.get_all_records()) + 1
+                        subtotal = total / len(materiales_usados)
+                        ws_ventas.append_row([num_ventas, mat_id, desc_servicio, cant, subtotal, fecha_actual])
+
+                    st.session_state["pdf_garantia"] = generar_garantia_pdf(
+                        fecha_str=fecha_corta,
+                        modelo_auto=modelo_auto,
+                        cristales_desc=cristales_instalados,
+                        tonalidad_desc=tonalidad_usada if tonalidad_usada else "Estándar",
+                        anos_garantia=anos_garantia
+                    )
+                    st.session_state["nombre_garantia"] = f"Garantia_{modelo_auto.replace(' ', '_')}.pdf"
+                    st.success(f
