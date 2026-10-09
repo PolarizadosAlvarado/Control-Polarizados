@@ -1,13 +1,9 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 from datetime import datetime
 from io import BytesIO
 import os
-import json
-
-# Importaciones para Google Sheets
-import gspread
-from google.oauth2.service_account import Credentials
 
 # Importaciones para generación de PDF de Garantía
 from reportlab.lib.pagesizes import letter
@@ -17,45 +13,62 @@ from reportlab.lib.colors import HexColor
 # Configuración de la página
 st.set_page_config(page_title="Control de Polarizados", page_icon="🚗", layout="wide")
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
-@st.cache_resource
-def conectar_gsheets():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
-    # Manejo de Secrets en Streamlit Cloud
-    if "gcp_service_account" in st.secrets:
-        sec = st.secrets["gcp_service_account"]
-        creds_dict = dict(sec) if not isinstance(sec, str) else json.loads(sec)
-        
-        # Corrección para formatear la private_key de Google
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-            
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    elif os.path.exists("credentials.json"):
-        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-    else:
-        st.error("❌ No se encontraron las credenciales de Google Sheets en Secrets.")
-        st.stop()
-        
-    client = gspread.authorize(creds)
-    sheet = client.open("Control_Polarizados_DB")
-    return sheet
+# --- CONEXIÓN A BASE DE DATOS SQLITE LOCAL ---
+DB_NAME = "polarizado_db.sqlite"
 
-def obtener_df(sheet_name):
-    sh = conectar_gsheets()
-    worksheet = sh.worksheet(sheet_name)
-    data = worksheet.get_all_records()
-    return pd.DataFrame(data), worksheet
+def conectar_db():
+    conn = sqlite3.connect(DB_NAME)
+    return conn
+
+def inicializar_db():
+    conn = conectar_db()
+    cursor = conn.cursor()
+    
+    # Tabla de productos/inventario
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS productos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            tipo_pelicula TEXT,
+            stock REAL NOT NULL,
+            precio_venta REAL NOT NULL
+        )
+    ''')
+    
+    # Tabla de ventas
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ventas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            producto_id INTEGER,
+            vehiculo TEXT,
+            cantidad REAL,
+            total REAL,
+            fecha TEXT,
+            FOREIGN KEY (producto_id) REFERENCES productos (id)
+        )
+    ''')
+    
+    # Tabla de gastos
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gastos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            concepto TEXT,
+            categoria TEXT,
+            monto REAL,
+            fecha TEXT
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+inicializar_db()
 
 # --- FUNCIÓN GENERADORA DE CARTA DE GARANTÍA ---
 def generar_garantia_pdf(fecha_str, modelo_auto, cristales_desc, tonalidad_desc, anos_garantia=1):
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter # 612 x 792 pt
+    width, height = letter
     
     # LOGO EN ENCABEZADO
     logo_cargado = False
@@ -141,14 +154,16 @@ st.title("🚗 Control de Inventario y Ventas - Polarizados")
 
 menu = st.sidebar.selectbox(
     "Navegación", 
-    ["Registrar Venta", "Registrar Gasto", "Inventario / Stock", "Reportes y Balance"]
+    ["Registrar Venta", "Registrar Gasto", "Inventario / Stock", "Reportes y Balance", "Respaldar / Restaurar Datos"]
 )
 
 # --- OPCIÓN 1: REGISTRAR VENTA ---
 if menu == "Registrar Venta":
     st.header("🛒 Registrar Nueva Venta / Servicio")
     
-    df_productos, ws_productos = obtener_df("productos")
+    conn = conectar_db()
+    df_productos = pd.read_sql_query("SELECT * FROM productos", conn)
+    conn.close()
     
     if df_productos.empty:
         st.warning("⚠️ No hay productos en el inventario. Agrega productos en 'Inventario / Stock'.")
@@ -332,9 +347,160 @@ if menu == "Registrar Venta":
                 elif stock_insuficiente:
                     st.error("❌ Stock insuficiente en inventario para alguno de los materiales.")
                 else:
-                    _, ws_ventas = obtener_df("ventas")
+                    conn = conectar_db()
+                    cursor = conn.cursor()
                     fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     fecha_corta = datetime.now().strftime("%d/%m/%Y")
                     desc_servicio = f"{modelo_auto} - {cristales_instalados} ({tonalidad_usada})"
 
-                    # Actualizar Stock y Guardar en
+                    for mat_id, nombre, cant, disp in materiales_usados:
+                        # Descontar stock
+                        cursor.execute("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, mat_id))
+                        # Insertar venta
+                        subtotal = total / len(materiales_usados)
+                        cursor.execute(
+                            "INSERT INTO ventas (producto_id, vehiculo, cantidad, total, fecha) VALUES (?, ?, ?, ?, ?)",
+                            (mat_id, desc_servicio, cant, subtotal, fecha_actual)
+                        )
+                    
+                    conn.commit()
+                    conn.close()
+
+                    st.session_state["pdf_garantia"] = generar_garantia_pdf(
+                        fecha_str=fecha_corta,
+                        modelo_auto=modelo_auto,
+                        cristales_desc=cristales_instalados,
+                        tonalidad_desc=tonalidad_usada if tonalidad_usada else "Estándar",
+                        anos_garantia=anos_garantia
+                    )
+                    st.session_state["nombre_garantia"] = f"Garantia_{modelo_auto.replace(' ', '_')}.pdf"
+                    st.success(f"🎉 Venta registrada con éxito. Total: ${total:.2f}")
+
+        if "pdf_garantia" in st.session_state and st.session_state["pdf_garantia"]:
+            with col_btn2:
+                st.download_button(
+                    label="📄 Descargar Carta de Garantía (PDF)",
+                    data=st.session_state["pdf_garantia"],
+                    file_name=st.session_state.get("nombre_garantia", "Carta_Garantia.pdf"),
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
+# --- OPCIÓN 2: REGISTRAR GASTO ---
+elif menu == "Registrar Gasto":
+    st.header("💸 Registrar Nuevo Gasto")
+    col1, col2 = st.columns(2)
+    with col1:
+        concepto = st.text_input("Descripción del Gasto:", placeholder="Ej. Navajas Olfa, Luz, Herramientas")
+        categoria = st.selectbox("Categoría:", ["Herramienta", "Material/Insumo", "Local", "Varios"])
+    with col2:
+        monto = st.number_input("Monto Gastado ($):", min_value=0.0, step=10.0)
+        
+    if st.button("💾 Guardar Gasto"):
+        if concepto and monto > 0:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO gastos (concepto, categoria, monto, fecha) VALUES (?, ?, ?, ?)",
+                (concepto, categoria, monto, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            )
+            conn.commit()
+            conn.close()
+            st.success(f"✅ Gasto de ${monto:.2f} registrado.")
+
+# --- OPCIÓN 3: INVENTARIO / STOCK ---
+elif menu == "Inventario / Stock":
+    st.header("📦 Control de Inventario")
+    tab1, tab2, tab3 = st.tabs(["Ver Inventario", "Agregar Producto", "Reabastecer / Borrar"])
+    
+    conn = conectar_db()
+    df_inv = pd.read_sql_query("SELECT * FROM productos", conn)
+    conn.close()
+    
+    with tab1:
+        st.dataframe(df_inv, use_container_width=True)
+    with tab2:
+        nom = st.text_input("Nombre del Producto:")
+        tipo = st.text_input("Tipo / Tono:")
+        stk = st.number_input("Stock Inicial (Metros):", min_value=0.0, step=5.0)
+        prc = st.number_input("Precio Estimado por Metro ($):", min_value=0.0, step=50.0)
+        if st.button("➕ Guardar"):
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO productos (nombre, tipo_pelicula, stock, precio_venta) VALUES (?, ?, ?, ?)", (nom, tipo, stk, prc))
+            conn.commit()
+            conn.close()
+            st.success("✅ Producto agregado.")
+            st.rerun()
+    with tab3:
+        if not df_inv.empty:
+            prod_map = {f"{row['nombre']} (ID: {row['id']})": row['id'] for _, row in df_inv.iterrows()}
+            p_reab = st.selectbox("Producto:", list(prod_map.keys()))
+            m_sumar = st.number_input("Metros a Sumar:", min_value=0.1, step=5.0)
+            if st.button("📈 Reabastecer"):
+                target_id = prod_map[p_reab]
+                conn = conectar_db()
+                cursor = conn.cursor()
+                cursor.execute("UPDATE productos SET stock = stock + ? WHERE id = ?", (m_sumar, target_id))
+                conn.commit()
+                conn.close()
+                st.success("✅ Stock actualizado.")
+                st.rerun()
+
+# --- OPCIÓN 4: REPORTES Y BALANCE ---
+elif menu == "Reportes y Balance":
+    st.header("📊 Balance Financiero y Reportes")
+    conn = conectar_db()
+    df_ventas = pd.read_sql_query("SELECT * FROM ventas", conn)
+    df_gastos = pd.read_sql_query("SELECT * FROM gastos", conn)
+    conn.close()
+    
+    t_v = pd.to_numeric(df_ventas['total']).sum() if not df_ventas.empty else 0.0
+    t_g = pd.to_numeric(df_gastos['monto']).sum() if not df_gastos.empty else 0.0
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("💵 Total Ingresos", f"${t_v:.2f}")
+    c2.metric("💸 Total Gastos", f"${t_g:.2f}")
+    c3.metric("📈 Ganancia Neta", f"${t_v - t_g:.2f}")
+    st.divider()
+    
+    col_v, col_g = st.columns(2)
+    with col_v:
+        st.subheader("Historial de Ventas")
+        st.dataframe(df_ventas, use_container_width=True)
+    with col_g:
+        st.subheader("Historial de Gastos")
+        st.dataframe(df_gastos, use_container_width=True)
+
+# --- OPCIÓN 5: RESPALDAR / RESTAURAR DATOS ---
+elif menu == "Respaldar / Restaurar Datos":
+    st.header("💾 Respaldar / Restaurar Base de Datos")
+    st.write("Usa esta sección para respaldar tus datos localmente sin depender de servicios en la nube.")
+    
+    col_resp, col_rest = st.columns(2)
+    
+    with col_resp:
+        st.subheader("📥 Guardar Respaldo")
+        st.write("Descarga una copia actual de tu base de datos a tu equipo o celular.")
+        if os.path.exists(DB_NAME):
+            with open(DB_NAME, "rb") as fp:
+                st.download_button(
+                    label="⬇️ Descargar Base de Datos (.sqlite)",
+                    data=fp,
+                    file_name=f"polarizado_db_{datetime.now().strftime('%Y%m%d')}.sqlite",
+                    mime="application/x-sqlite3",
+                    use_container_width=True
+                )
+        else:
+            st.info("Aún no se ha creado una base de datos local.")
+
+    with col_rest:
+        st.subheader("📤 Restaurar Respaldo")
+        st.write("Si la app se reinició, sube aquí tu archivo de respaldo descargado previamente.")
+        archivo_subido = st.file_uploader("Selecciona tu archivo .sqlite:", type=["sqlite", "db"])
+        if archivo_subido is not None:
+            if st.button("⚠️ Confirmar Restauración", type="primary"):
+                with open(DB_NAME, "wb") as f:
+                    f.write(archivo_subido.getbuffer())
+                st.success("🎉 ¡Base de datos restaurada con éxito!")
+                st.rerun()
